@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MedBuddy — Medication Reminder (MVP)</title>
+  <style>
+    /* Simple, beginner-friendly styles */
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{margin:0;background:#f7fafc;color:#0f172a;padding:18px}
+    header{display:flex;align-items:center;gap:12px}
+    h1{font-size:20px;margin:0}
+    .card{background:white;padding:14px;border-radius:10px;box-shadow:0 4px 12px rgba(15,23,42,.06);margin-top:14px}
+    form{display:grid;grid-template-columns:1fr 120px 80px;gap:8px}
+    input,button,select{padding:8px;border-radius:8px;border:1px solid #e6eef6}
+    button{cursor:pointer}
+    ul{list-style:none;padding:0;margin:0}
+    li{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px dashed #eef2f7}
+    .meta{font-size:13px;color:#374151}
+    .pill-actions button{margin-left:6px}
+    .tiny{font-size:12px;color:#6b7280}
+    footer{margin-top:12px;font-size:13px;color:#6b7280}
+    @media (max-width:540px){form{grid-template-columns:1fr 100px 1fr}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MedBuddy — Medication Reminder (MVP)</h1>
+    <div class="tiny">(Beginner-friendly demo — no servers required)</div>
+  </header>
+
+  <section class="card">
+    <strong>Add a medicine</strong>
+    <form id="addForm">
+      <input id="medName" placeholder="Medicine name, e.g. Metformin" required />
+      <input id="medTime" type="time" required />
+      <select id="repeat">
+        <option value="daily">Daily</option>
+        <option value="once">Once</option>
+      </select>
+      <button id="addBtn" type="submit">Add</button>
+    </form>
+    <div class="tiny" style="margin-top:8px">How it works: the app saves medicines in your browser (localStorage) and checks every 30s for due reminders. If your browser allows notifications you'll get a system notification. Otherwise it shows an alert.</div>
+  </section>
+
+  <section class="card" id="listCard">
+    <strong>My medicines</strong>
+    <ul id="medList"></ul>
+    <div id="emptyNote" class="tiny" style="margin-top:8px">No medicines yet — add one above to get started.</div>
+  </section>
+
+  <section class="card">
+    <strong>Quick demo controls</strong>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <button id="notifyTest">Test Notification</button>
+      <button id="clearAll">Clear All (localStorage)</button>
+      <button id="simulateMiss">Simulate Missed Dose</button>
+    </div>
+    <div class="tiny" style="margin-top:8px">Tip: To get system notifications, run this page from <strong>localhost</strong> (e.g., VS Code Live Server) or deploy it via HTTPS (GitHub Pages / Netlify).</div>
+  </section>
+
+  <footer class="tiny">Prototype created to learn & demo medication reminders. Next steps: auth, cloud DB, push notifications, IoT integration.</footer>
+
+  <script>
+    // ---------- Simple MedBuddy MVP (beginner-friendly) ----------
+    // Data structure saved in localStorage: meds = [{id,name,time,repeat,lastTaken}]
+
+    const medListEl = document.getElementById('medList');
+    const emptyNote = document.getElementById('emptyNote');
+    const FORM = document.getElementById('addForm');
+
+    // Request notification permission early (best-effort)
+    if ('Notification' in window) {
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().then(p => console.log('Notif permission:', p));
+      }
+    }
+
+    // Utilities
+    function loadMeds(){
+      try{ return JSON.parse(localStorage.getItem('meds')||'[]'); }catch(e){return []}
+    }
+    function saveMeds(meds){ localStorage.setItem('meds', JSON.stringify(meds)); }
+    function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+    // Compute next occurrence (today or tomorrow) based on HH:MM
+    function nextOccurrenceFor(timeStr){
+      const [hh,mm] = timeStr.split(':').map(Number);
+      const now = new Date();
+      const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+      if(target <= now) target.setDate(target.getDate()+1);
+      return target.getTime();
+    }
+
+    // Render list
+    function render(){
+      const meds = loadMeds();
+      medListEl.innerHTML='';
+      if(meds.length===0){ emptyNote.style.display='block'; return; }
+      emptyNote.style.display='none';
+
+      meds.forEach(m=>{
+        const li = document.createElement('li');
+        const left = document.createElement('div');
+        left.innerHTML = `<div><strong>${escapeHtml(m.name)}</strong></div><div class="meta">Time: ${m.time} · ${m.repeat} · Last taken: ${m.lastTaken?new Date(m.lastTaken).toLocaleString():'—'}</div>`;
+        const right = document.createElement('div'); right.className='pill-actions';
+        const mark = document.createElement('button'); mark.textContent='Mark taken';
+        mark.onclick = ()=>{ markTaken(m.id); };
+        const del = document.createElement('button'); del.textContent='Delete'; del.onclick = ()=>{ deleteMed(m.id); };
+        const notify = document.createElement('button'); notify.textContent='Notify caregiver'; notify.onclick = ()=>{ notifyCaregiver(m); };
+        right.appendChild(mark); right.appendChild(notify); right.appendChild(del);
+        li.appendChild(left); li.appendChild(right);
+        medListEl.appendChild(li);
+      });
+    }
+
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;" }[c])); }
+
+    // Form add
+    FORM.addEventListener('submit', e=>{
+      e.preventDefault();
+      const name = document.getElementById('medName').value.trim();
+      const time = document.getElementById('medTime').value;
+      const repeat = document.getElementById('repeat').value;
+      if(!name || !time){ alert('Please provide name and time'); return; }
+      const meds = loadMeds();
+      meds.push({ id: uid(), name, time, repeat, lastTaken: null, nextAt: nextOccurrenceFor(time) });
+      saveMeds(meds); render(); FORM.reset();
+    });
+
+    // Actions
+    function deleteMed(id){ const meds = loadMeds().filter(m=>m.id!==id); saveMeds(meds); render(); }
+
+    function markTaken(id){
+      const meds = loadMeds();
+      const m = meds.find(x=>x.id===id); if(!m) return;
+      m.lastTaken = Date.now();
+      if(m.repeat==='daily') m.nextAt = nextOccurrenceFor(m.time);
+      else m.nextAt = null; // once-off
+      saveMeds(meds); render();
+      playBeep();
+    }
+
+    function notifyCaregiver(med){
+      const subject = encodeURIComponent(`Missed dose: ${med.name}`);
+      const body = encodeURIComponent(`Patient may have missed a dose of ${med.name} scheduled at ${med.time}. Please check.`);
+      // opens user's email client — simple way to demo "alerting a caregiver" without server
+      window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    }
+
+    // Notification helper
+    function showReminder(med){
+      const title = `Time to take: ${med.name}`;
+      const body = `Dose scheduled at ${med.time}. Click Mark taken when done.`;
+      if('Notification' in window && Notification.permission==='granted'){
+        new Notification(title, { body });
+      } else {
+        alert(title + "\n" + body);
+      }
+    }
+
+    // Play a short beep using WebAudio
+    function playBeep(){
+      try{
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(); o.type='sine'; o.frequency.value = 880; const g = ctx.createGain(); g.gain.value=0.02; o.connect(g); g.connect(ctx.destination); o.start(); setTimeout(()=>{o.stop(); ctx.close();}, 200);
+      }catch(e){console.log('sound failed',e)}
+    }
+
+    // Periodic check for due reminders (runs in-page)
+    function checkDue(){
+      const now = Date.now();
+      const meds = loadMeds();
+      let changed = false;
+      meds.forEach(m=>{
+        if(!m.nextAt) return; // once-off done
+        // if nextAt is within the last 60s, trigger
+        if(m.nextAt <= now && now - m.nextAt < 60*1000){
+          showReminder(m);
+          playBeep();
+          // mark next occurrence after alert but don't set lastTaken — user should click Mark taken.
+          if(m.repeat==='daily') m.nextAt = nextOccurrenceFor(m.time);
+          else m.nextAt = null;
+          changed = true;
+        }
+      });
+      if(changed) saveMeds(meds);
+    }
+
+    // Demo controls
+    document.getElementById('notifyTest').onclick = ()=>{
+      showReminder({name:'TestMed',time:new Date().toLocaleTimeString()});
+    };
+    document.getElementById('clearAll').onclick = ()=>{ if(confirm('Clear all meds from this browser?')){ localStorage.removeItem('meds'); render(); } };
+    document.getElementById('simulateMiss').onclick = ()=>{
+      // Simulate: take first med and mark as missed -> open mailto for caregiver
+      const meds = loadMeds(); if(meds.length===0){ alert('No meds to simulate'); return; }
+      notifyCaregiver(meds[0]);
+    };
+
+    // Start periodic checker
+    render();
+    setInterval(checkDue, 30*1000); // check every 30 seconds
+
+    // Initial demo seed for first-time users (only if no meds)
+    (function seed(){ if(loadMeds().length===0){ const meds=[{id:uid(),name:'Example: Amlodipine',time: nextTimeString(1),repeat:'daily',lastTaken:null,nextAt:nextOccurrenceFor(nextTimeString(1))}]; saveMeds(meds); render(); }})();
+
+    function nextTimeString(minsFromNow){ const d=new Date(Date.now()+minsFromNow*60000); return d.toTimeString().slice(0,5); }
+  </script>
+</body>
+</html>
